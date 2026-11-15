@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>X メディアダウンローダー</title>
+    <title>Twitter メディアダウンローダー (Referer対策版)</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #f5f5f5; color: #333; }
         h1 { font-size: 1.4rem; border-bottom: 2px solid #1da1f2; padding-bottom: 10px; margin-bottom: 20px; }
@@ -13,8 +13,8 @@
         button:disabled { opacity: 0.5; cursor: not-allowed; }
         #loadBtn { background: #1da1f2; color: white; }
         #loadBtn:hover:not(:disabled) { background: #0d8bd9; }
-        #downloadAllBtn { background: #17bf63; color: white; }
-        #downloadAllBtn:hover:not(:disabled) { background: #119c50; }
+        #openAllBtn { background: #17bf63; color: white; }
+        #openAllBtn:hover:not(:disabled) { background: #119c50; }
         #status { margin: 15px 0; padding: 10px 14px; border-radius: 6px; font-size: 14px; display: none; }
         .status-info { background: #e8f5fe; color: #0c5460; border: 1px solid #bee5eb; }
         .status-error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
@@ -29,6 +29,8 @@
         .media-url:hover { text-decoration: underline; }
         .dl-btn { margin-top: auto; padding: 8px 0; background: #1da1f2; color: white; border-radius: 4px; font-size: 12px; text-align: center; text-decoration: none; display: block; border: none; cursor: pointer; font-weight: 600; width: 100%; }
         .dl-btn:hover { background: #0d8bd9; }
+        .proxy-btn { display: block; margin-top: 4px; padding: 6px 0; background: #6c757d; color: white; border-radius: 4px; font-size: 11px; text-align: center; text-decoration: none; }
+        .proxy-btn:hover { background: #5a6268; }
         .header-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
         .count-badge { font-size: 13px; color: #555; }
         .hint-box { background: #fff8e1; border-left: 4px solid #ffc107; padding: 10px 14px; border-radius: 4px; font-size: 13px; margin-bottom: 18px; line-height: 1.6; }
@@ -41,9 +43,9 @@
     <h1>🐦 Twitter メディアダウンローダー</h1>
 
     <div class="hint-box">
-        💡 <strong>使い方</strong>: 読み込み後、各メディアの「開く」ボタンを押すと新しいタブでメディアが表示されます。
+        💡 <strong>保存方法</strong>: 各メディアの「開く」ボタンを押すと、<strong>リファラーを送らない状態</strong>で新しいタブにメディアが表示されます。
         表示された画像/動画を<strong>右クリック → 「名前を付けて保存」</strong>で保存してください。
-        一括ボタンを押すと全リンクをまとめたページが開きます。
+        一括ボタンでは全リンクをまとめた補助ページが開きます。
     </div>
 
     <div class="input-group">
@@ -54,7 +56,7 @@
     <div id="status"></div>
 
     <div class="header-actions" id="actionArea" style="display:none;">
-        <button id="downloadAllBtn" onclick="openAllLinks()">📥 全リンクをまとめて開く</button>
+        <button id="openAllBtn" onclick="openAllLinks()">📥 全リンクをまとめて開く</button>
         <span class="count-badge" id="countBadge"></span>
     </div>
 
@@ -63,18 +65,14 @@
 <script>
     let currentMediaList = [];
 
-    // ===== ステータス表示 =====
     function setStatus(msg, type) {
         const el = document.getElementById('status');
         el.textContent = msg;
         el.className = 'status-' + type;
         el.style.display = 'block';
     }
-    function hideStatus() {
-        document.getElementById('status').style.display = 'none';
-    }
+    function hideStatus() { document.getElementById('status').style.display = 'none'; }
 
-    // ===== URL抽出 =====
     function extractTweetId(input) {
         const trimmed = input.trim();
         if (/^\d+$/.test(trimmed)) return trimmed;
@@ -82,15 +80,10 @@
         return match ? match[1] : null;
     }
 
-    // ===== 読み込み =====
     async function loadMedia() {
         const input = document.getElementById('tweetUrl').value;
         const tweetId = extractTweetId(input);
-
-        if (!tweetId) {
-            setStatus('❌ 有効なツイートURLまたはIDを入力してください。', 'error');
-            return;
-        }
+        if (!tweetId) { setStatus('❌ 有効なツイートURLまたはIDを入力してください。', 'error'); return; }
 
         const loadBtn = document.getElementById('loadBtn');
         loadBtn.disabled = true;
@@ -103,12 +96,10 @@
         try {
             const data = await fetchTweetData(tweetId);
             const media = extractMedia(data);
-
             if (media.length === 0) {
                 setStatus('ℹ️ このツイートにはダウンロード可能な画像・動画が含まれていません。', 'info');
                 return;
             }
-
             currentMediaList = media;
             renderMedia(media);
             setStatus(`✅ ${media.length} 件のメディアを検出しました。`, 'success');
@@ -123,13 +114,11 @@
         }
     }
 
-    // ===== Tweet情報取得（API本体のみ・プロキシは使わない） =====
     async function fetchTweetData(tweetId) {
         const apiUrls = [
             `https://api.fxtwitter.com/status/${tweetId}`,
             `https://api.vxtwitter.com/Twitter/status/${tweetId}`
         ];
-
         for (const url of apiUrls) {
             try {
                 const res = await fetch(url);
@@ -137,98 +126,52 @@
                     const json = await res.json();
                     if (json.code === 200 || json.tweet) return json;
                 }
-            } catch (e) {
-                console.warn(`Fetch failed: ${url}`, e.message);
-            }
+            } catch (e) { console.warn(`Fetch failed: ${url}`, e.message); }
         }
-        // API本体すらブロックされる環境向けにプロキシを1つだけ試す
         try {
-            const url = apiUrls[0];
-            const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+            const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(apiUrls[0])}`;
             const res = await fetch(proxyUrl);
             if (res.ok) {
                 const json = await res.json();
                 if (json.code === 200 || json.tweet) return json;
             }
-        } catch (e) {
-            console.warn('Proxy fetch failed:', e.message);
-        }
+        } catch (e) { console.warn('Proxy fetch failed:', e.message); }
         throw new Error('APIへのアクセスに失敗しました');
     }
 
-    // ===== メディア抽出 =====
     function extractMedia(data) {
         const list = [];
-
         function sanitizeUrl(url) {
             if (!url) return url;
-            // 403対策: video.twimg.com の ?tag= を除去
             if (url.includes('video.twimg.com')) {
                 try {
                     const u = new URL(url);
                     u.searchParams.delete('tag');
                     return u.toString();
-                } catch (e) {
-                    return url.replace(/[?&]tag=[^&]*/g, '');
-                }
+                } catch (e) { return url.replace(/[?&]tag=[^&]*/g, ''); }
             }
             return url;
         }
 
         if (data.tweet && data.tweet.media) {
             const m = data.tweet.media;
-            if (m.photos) {
-                m.photos.forEach((p, i) => {
-                    list.push({
-                        type: 'image',
-                        url: sanitizeUrl(p.url),
-                        thumbnail: sanitizeUrl(p.url),
-                        label: `画像 ${i + 1}`,
-                        ext: getExt(p.url)
-                    });
-                });
-            }
-            if (m.videos) {
-                m.videos.forEach((v, i) => {
-                    list.push({
-                        type: 'video',
-                        url: sanitizeUrl(v.url),
-                        thumbnail: v.thumbnail_url || '',
-                        label: `動画 ${i + 1}`,
-                        ext: 'mp4'
-                    });
-                });
-            }
+            if (m.photos) m.photos.forEach((p, i) => list.push({ type: 'image', url: sanitizeUrl(p.url), thumbnail: sanitizeUrl(p.url), label: `画像 ${i + 1}`, ext: getExt(p.url) }));
+            if (m.videos) m.videos.forEach((v, i) => list.push({ type: 'video', url: sanitizeUrl(v.url), thumbnail: v.thumbnail_url || '', label: `動画 ${i + 1}`, ext: 'mp4' }));
         }
-
         if (data.media_extended && Array.isArray(data.media_extended)) {
             data.media_extended.forEach((m, i) => {
                 const sanitized = sanitizeUrl(m.url);
                 if (list.some(x => x.url === sanitized)) return;
-                list.push({
-                    type: m.type === 'video' ? 'video' : 'image',
-                    url: sanitized,
-                    thumbnail: m.thumbnail_url || sanitized,
-                    label: (m.type === 'video' ? '動画' : '画像') + ' ' + (i + 1),
-                    ext: m.type === 'video' ? 'mp4' : getExt(sanitized)
-                });
+                list.push({ type: m.type === 'video' ? 'video' : 'image', url: sanitized, thumbnail: m.thumbnail_url || sanitized, label: (m.type === 'video' ? '動画' : '画像') + ' ' + (i + 1), ext: m.type === 'video' ? 'mp4' : getExt(sanitized) });
             });
         }
-
         if (list.length === 0 && data.mediaURLs && Array.isArray(data.mediaURLs)) {
             data.mediaURLs.forEach((url, i) => {
                 const sanitized = sanitizeUrl(url);
                 const isVideo = /video\.twimg\.com|\.mp4/i.test(sanitized);
-                list.push({
-                    type: isVideo ? 'video' : 'image',
-                    url: sanitized,
-                    thumbnail: sanitized,
-                    label: (isVideo ? '動画' : '画像') + ' ' + (i + 1),
-                    ext: isVideo ? 'mp4' : getExt(sanitized)
-                });
+                list.push({ type: isVideo ? 'video' : 'image', url: sanitized, thumbnail: sanitized, label: (isVideo ? '動画' : '画像') + ' ' + (i + 1), ext: isVideo ? 'mp4' : getExt(sanitized) });
             });
         }
-
         return list;
     }
 
@@ -238,11 +181,9 @@
         return parts.length > 1 ? parts.pop().toLowerCase() : 'jpg';
     }
 
-    // ===== 描画 =====
     function renderMedia(list) {
         const grid = document.getElementById('mediaGrid');
         grid.innerHTML = '';
-
         list.forEach((item, index) => {
             const card = document.createElement('div');
             card.className = 'media-card';
@@ -276,17 +217,28 @@
             urlLink.className = 'media-url';
             urlLink.href = item.url;
             urlLink.target = '_blank';
-            urlLink.rel = 'noopener';
+            urlLink.rel = 'noreferrer noopener'; // ★ Refererを送らない
             urlLink.textContent = item.url;
 
             const openBtn = document.createElement('button');
             openBtn.className = 'dl-btn';
-            openBtn.textContent = '🔗 新しいタブで開く';
+            openBtn.textContent = '🔗 新しいタブで開く (Refererなし)';
             openBtn.onclick = () => openSingle(item);
 
             info.appendChild(typeLabel);
             info.appendChild(urlLink);
             info.appendChild(openBtn);
+
+            // それでも403になる場合の外部プロキシ（保険）
+            if (item.type === 'video' && item.url.includes('video.twimg.com')) {
+                const proxyLink = document.createElement('a');
+                proxyLink.className = 'proxy-btn';
+                proxyLink.href = 'https://twidropper.com/';
+                proxyLink.target = '_blank';
+                proxyLink.rel = 'noreferrer noopener';
+                proxyLink.textContent = '外部サイト (TwiDropper) で試す';
+                info.appendChild(proxyLink);
+            }
 
             card.appendChild(preview);
             card.appendChild(info);
@@ -294,88 +246,60 @@
         });
     }
 
-    // ===== 個別オープン =====
     function openSingle(item) {
         const a = document.createElement('a');
         a.href = item.url;
         a.target = '_blank';
-        a.rel = 'noopener';
+        a.rel = 'noreferrer noopener'; // ★ ここでもRefererを送らない
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
-        setStatus('🔗 新しいタブで開きました。右クリック →「名前を付けて保存」で保存してください。', 'info');
+        setStatus('🔗 Refererなしで新しいタブに開きました。右クリック →「名前を付けて保存」で保存してください。', 'info');
     }
 
-    // ===== 一括: 補助ページを生成して開く =====
     function openAllLinks() {
         if (currentMediaList.length === 0) return;
-
         const itemsHtml = currentMediaList.map((item, i) => {
             const typeLabel = item.type === 'video' ? '🎬 動画' : '🖼️ 画像';
             return `<li>
                 <div class="item-type">${typeLabel} <span class="item-num">#${i + 1}</span></div>
-                <a href="${escapeAttr(item.url)}" target="_blank" rel="noopener" class="item-link">${escapeHtml(item.url)}</a>
+                <a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer noopener" class="item-link">${escapeHtml(item.url)}</a>
             </li>`;
         }).join('');
 
-        const html = `<!DOCTYPE html>
-<html lang="ja">
-<head>
-<meta charset="UTF-8">
-<title>Twitter Media - 一括ダウンロード補助</title>
+        const html = `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><title>Twitter Media - 一括ダウンロード補助</title>
 <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 900px; margin: 20px auto; padding: 20px; background: #f5f5f5; color: #333; }
+    body { font-family: -apple-system, sans-serif; max-width: 900px; margin: 20px auto; padding: 20px; background: #f5f5f5; }
     h1 { font-size: 1.3rem; border-bottom: 2px solid #1da1f2; padding-bottom: 10px; }
     .hint { background: #fff8e1; border-left: 4px solid #ffc107; padding: 14px 18px; border-radius: 4px; line-height: 1.7; margin-bottom: 20px; }
     .hint code { background: #fff; padding: 2px 6px; border-radius: 3px; border: 1px solid #ddd; }
     ul { list-style: none; padding: 0; }
     li { background: white; padding: 14px 18px; margin: 10px 0; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
     .item-type { font-weight: 700; margin-bottom: 6px; font-size: 14px; }
-    .item-num { color: #888; font-weight: 400; margin-left: 4px; }
-    .item-link { color: #1da1f2; word-break: break-all; font-size: 13px; line-height: 1.5; text-decoration: none; }
+    .item-num { color: #888; font-weight: 400; }
+    .item-link { color: #1da1f2; word-break: break-all; font-size: 13px; text-decoration: none; }
     .item-link:hover { text-decoration: underline; }
-    .counter { color: #888; font-size: 13px; }
-</style>
-</head>
-<body>
+</style></head><body>
     <h1>📥 メディア一覧 (${currentMediaList.length} 件)</h1>
     <div class="hint">
-        <strong>保存方法:</strong> 各リンクをクリックするとメディアが新しいタブで開きます。<br>
-        画像/動画が表示されたら <code>右クリック → 「名前を付けて保存」</code> で保存してください。<br>
-        動画の場合は再生を少し待つと保存メニューが有効になります。
+        <strong>保存方法:</strong> 各リンクは <code>rel="noreferrer"</code> 付きで開くため、Refererによる403を回避します。<br>
+        画像/動画が表示されたら <code>右クリック → 「名前を付けて保存」</code> で保存してください。
     </div>
-    <p class="counter">合計 ${currentMediaList.length} 件</p>
     <ul>${itemsHtml}</ul>
-</body>
-</html>`;
+</body></html>`;
 
         const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
         const url = URL.createObjectURL(blob);
-
-        // 新しいタブで開く
         const win = window.open(url, '_blank', 'noopener');
-        if (!win) {
-            setStatus('⚠️ ポップアップがブロックされました。ブラウザのアドレスバー付近で「ポップアップを許可」してください。', 'error');
-        } else {
-            setStatus('✅ 全リンクをまとめたページを新しいタブで開きました。', 'success');
-        }
-
-        // 少し待ってからBlob URLを解放（開いた側で読み込みが終わるまで）
+        if (!win) setStatus('⚠️ ポップアップがブロックされました。ブラウザのアドレスバー付近で許可してください。', 'error');
+        else setStatus('✅ 全リンクの補助ページを新しいタブで開きました。', 'success');
         setTimeout(() => URL.revokeObjectURL(url), 60000);
     }
 
-    // ===== HTMLエスケープ =====
-    function escapeHtml(s) {
-        return String(s).replace(/[&<>"']/g, c => ({
-            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-        }[c]));
-    }
+    function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
     function escapeAttr(s) { return escapeHtml(s); }
 
-    // Enterキー対応
-    document.getElementById('tweetUrl').addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') loadMedia();
-    });
+    document.getElementById('tweetUrl').addEventListener('keydown', function(e) { if (e.key === 'Enter') loadMedia(); });
 </script>
 
 </body>
