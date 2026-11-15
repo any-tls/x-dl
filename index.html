@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Xメディアダウンローダー</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #f5f5f5; color: #333; }
+        h1 { font-size: 1.4rem; border-bottom: 2px solid #1da1f2; padding-bottom: 10px; margin-bottom: 20px; }
+        .input-group { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+        input[type="text"] { flex: 1; min-width: 250px; padding: 10px 14px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; box-sizing: border-box; }
+        button { padding: 10px 20px; border: none; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.2s; white-space: nowrap; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        #loadBtn { background: #1da1f2; color: white; }
+        #loadBtn:hover:not(:disabled) { background: #0d8bd9; }
+        #downloadAllBtn { background: #17bf63; color: white; }
+        #downloadAllBtn:hover:not(:disabled) { background: #119c50; }
+        #status { margin: 15px 0; padding: 10px 14px; border-radius: 6px; font-size: 14px; display: none; }
+        .status-info { background: #e8f5fe; color: #0c5460; border: 1px solid #bee5eb; }
+        .status-error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .status-success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; margin-top: 20px; }
+        .media-card { background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.08); display: flex; flex-direction: column; }
+        .media-preview { width: 100%; aspect-ratio: 16/9; background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+        .media-preview img, .media-preview video { width: 100%; height: 100%; object-fit: contain; }
+        .media-info { padding: 10px 12px; flex: 1; display: flex; flex-direction: column; gap: 8px; }
+        .media-type { font-size: 11px; font-weight: 700; text-transform: uppercase; color: #888; letter-spacing: 0.5px; }
+        .media-url { font-size: 11px; color: #1da1f2; word-break: break-all; text-decoration: none; display: block; line-height: 1.4; max-height: 2.8em; overflow: hidden; }
+        .media-url:hover { text-decoration: underline; }
+        .dl-btn { margin-top: auto; padding: 8px 0; background: #1da1f2; color: white; border-radius: 4px; font-size: 12px; text-align: center; text-decoration: none; display: block; border: none; cursor: pointer; font-weight: 600; width: 100%; }
+        .dl-btn:hover { background: #0d8bd9; }
+        .header-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+        .count-badge { font-size: 13px; color: #555; }
+        #progress { display: none; margin-top: 10px; font-size: 13px; color: #555; }
+        .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin 0.6s linear infinite; margin-right: 6px; vertical-align: middle; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+    <h1>🐦 Twitter メディアダウンローダー</h1>
+    <p style="font-size: 13px; color: #666; margin-bottom: 18px;">
+        広告なし・ログイン不要。ツイートURLを貼り付けて「読み込み」を押すと、画像・動画の直リンクが表示されます。
+    </p>
+
+    <div class="input-group">
+        <input type="text" id="tweetUrl" placeholder="例: https://x.com/ユーザー名/status/1234567890 または https://twitter.com/..." />
+        <button id="loadBtn" onclick="loadMedia()">読み込み</button>
+    </div>
+
+    <div id="status"></div>
+    <div id="progress"></div>
+
+    <div class="header-actions" id="actionArea" style="display:none;">
+        <button id="downloadAllBtn" onclick="downloadAll()">📦 すべてZIPで一括ダウンロード</button>
+        <span class="count-badge" id="countBadge"></span>
+    </div>
+
+    <div class="media-grid" id="mediaGrid"></div>
+
+<script>
+    let currentMediaList = [];
+
+    // ===== ユーティリティ =====
+    function setStatus(msg, type) {
+        const el = document.getElementById('status');
+        el.textContent = msg;
+        el.className = 'status-' + type;
+        el.style.display = 'block';
+    }
+
+    function hideStatus() {
+        document.getElementById('status').style.display = 'none';
+    }
+
+    function extractTweetId(input) {
+        // x.com, twitter.com, mobile.twitter.com などのURLからIDを抽出
+        // または純粋な数字IDにも対応
+        const trimmed = input.trim();
+        if (/^\d+$/.test(trimmed)) return trimmed;
+        const match = trimmed.match(/(?:twitter\.com|x\.com|vxtwitter\.com|fxtwitter\.com)\/(?:[^\/]+)\/status\/(\d+)/i);
+        return match ? match[1] : null;
+    }
+
+    // ===== 読み込み =====
+    async function loadMedia() {
+        const input = document.getElementById('tweetUrl').value;
+        const tweetId = extractTweetId(input);
+
+        if (!tweetId) {
+            setStatus('❌ 有効なツイートURLまたはIDを入力してください。', 'error');
+            return;
+        }
+
+        const loadBtn = document.getElementById('loadBtn');
+        loadBtn.disabled = true;
+        loadBtn.innerHTML = '<span class="spinner"></span>読み込み中...';
+        hideStatus();
+        document.getElementById('mediaGrid').innerHTML = '';
+        document.getElementById('actionArea').style.display = 'none';
+        currentMediaList = [];
+
+        try {
+            const data = await fetchTweetData(tweetId);
+            const media = extractMedia(data);
+
+            if (media.length === 0) {
+                setStatus('ℹ️ このツイートにはダウンロード可能な画像・動画が含まれていません。', 'info');
+                return;
+            }
+
+            currentMediaList = media;
+            renderMedia(media);
+            setStatus(`✅ ${media.length} 件のメディアを検出しました。`, 'success');
+            document.getElementById('actionArea').style.display = 'flex';
+            document.getElementById('countBadge').textContent = `合計 ${media.length} ファイル`;
+        } catch (err) {
+            console.error(err);
+            setStatus('❌ 読み込みに失敗しました。ツイートが非公開か、URLが間違っている可能性があります。 (' + err.message + ')', 'error');
+        } finally {
+            loadBtn.disabled = false;
+            loadBtn.textContent = '読み込み';
+        }
+    }
+
+    // ===== fxtwitter API 呼び出し（CORSプロキシ・フォールバック付き） =====
+    async function fetchTweetData(tweetId) {
+        const apiUrls = [
+            `https://api.fxtwitter.com/status/${tweetId}`,
+            `https://api.vxtwitter.com/Twitter/status/${tweetId}`
+        ];
+
+        // 1. 直接fetchを試みる
+        for (const url of apiUrls) {
+            try {
+                const res = await fetch(url);
+                if (res.ok) {
+                    const json = await res.json();
+                    if (json.code === 200 || json.tweet) return json;
+                }
+            } catch (e) {
+                console.warn(`Direct fetch failed for ${url}:`, e.message);
+            }
+        }
+
+        // 2. CORSプロキシ経由で試みる
+        for (const url of apiUrls) {
+            try {
+                const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+                const res = await fetch(proxyUrl);
+                if (res.ok) {
+                    const json = await res.json();
+                    if (json.code === 200 || json.tweet) return json;
+                }
+            } catch (e) {
+                console.warn(`Proxy fetch failed for ${url}:`, e.message);
+            }
+        }
+
+        throw new Error('APIへのアクセスに失敗しました（CORSまたはネットワーク制限）');
+    }
+
+    // ===== レスポンスからメディアURLを抽出 =====
+    function extractMedia(data) {
+        const list = [];
+
+        // fxtwitter 形式
+        if (data.tweet && data.tweet.media) {
+            const m = data.tweet.media;
+            if (m.photos) {
+                m.photos.forEach((p, i) => {
+                    list.push({
+                        type: 'image',
+                        url: p.url,
+                        thumbnail: p.url,
+                        label: `画像 ${i + 1}`,
+                        ext: getExt(p.url)
+                    });
+                });
+            }
+            if (m.videos) {
+                m.videos.forEach((v, i) => {
+                    list.push({
+                        type: 'video',
+                        url: v.url,
+                        thumbnail: v.thumbnail_url || '',
+                        label: `動画 ${i + 1}`,
+                        ext: 'mp4',
+                        duration: v.duration_millis
+                    });
+                });
+            }
+        }
+
+        // vxtwitter 形式（media_extended）
+        if (data.media_extended && Array.isArray(data.media_extended)) {
+            data.media_extended.forEach((m, i) => {
+                // fxtwitterですでに追加済みの重複を避ける
+                if (list.some(x => x.url === m.url)) return;
+                list.push({
+                    type: m.type === 'video' ? 'video' : 'image',
+                    url: m.url,
+                    thumbnail: m.thumbnail_url || m.url,
+                    label: (m.type === 'video' ? '動画' : '画像') + ' ' + (i + 1),
+                    ext: m.type === 'video' ? 'mp4' : getExt(m.url),
+                    duration: m.duration_millis
+                });
+            });
+        }
+
+        // mediaURLs のみの場合
+        if (list.length === 0 && data.mediaURLs && Array.isArray(data.mediaURLs)) {
+            data.mediaURLs.forEach((url, i) => {
+                const isVideo = /video\.twimg\.com|\.mp4/i.test(url);
+                list.push({
+                    type: isVideo ? 'video' : 'image',
+                    url: url,
+                    thumbnail: url,
+                    label: (isVideo ? '動画' : '画像') + ' ' + (i + 1),
+                    ext: isVideo ? 'mp4' : getExt(url)
+                });
+            });
+        }
+
+        return list;
+    }
+
+    function getExt(url) {
+        const clean = url.split('?')[0];
+        const parts = clean.split('.');
+        return parts.length > 1 ? parts.pop().toLowerCase() : 'jpg';
+    }
+
+    // ===== 画面描画 =====
+    function renderMedia(list) {
+        const grid = document.getElementById('mediaGrid');
+        grid.innerHTML = '';
+
+        list.forEach((item, index) => {
+            const card = document.createElement('div');
+            card.className = 'media-card';
+
+            // プレビュー
+            const preview = document.createElement('div');
+            preview.className = 'media-preview';
+            if (item.type === 'video') {
+                const video = document.createElement('video');
+                video.src = item.url;
+                video.controls = true;
+                video.preload = 'metadata';
+                video.muted = true;
+                if (item.thumbnail) video.poster = item.thumbnail;
+                preview.appendChild(video);
+            } else {
+                const img = document.createElement('img');
+                img.src = item.url;
+                img.alt = item.label;
+                img.loading = 'lazy';
+                preview.appendChild(img);
+            }
+
+            // 情報
+            const info = document.createElement('div');
+            info.className = 'media-info';
+
+            const typeLabel = document.createElement('div');
+            typeLabel.className = 'media-type';
+            typeLabel.textContent = item.type === 'video' ? '🎬 動画' : '🖼️ 画像';
+
+            const urlLink = document.createElement('a');
+            urlLink.className = 'media-url';
+            urlLink.href = item.url;
+            urlLink.target = '_blank';
+            urlLink.rel = 'noopener';
+            urlLink.textContent = item.url;
+
+            const dlBtn = document.createElement('button');
+            dlBtn.className = 'dl-btn';
+            dlBtn.textContent = '⬇ ダウンロード';
+            dlBtn.onclick = () => downloadSingle(item, index);
+
+            info.appendChild(typeLabel);
+            info.appendChild(urlLink);
+            info.appendChild(dlBtn);
+
+            card.appendChild(preview);
+            card.appendChild(info);
+            grid.appendChild(card);
+        });
+    }
+
+    // ===== 個別ダウンロード =====
+    async function downloadSingle(item, index) {
+        try {
+            const response = await fetchWithProxy(item.url);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `twitter_media_${index + 1}.${item.ext}`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        } catch (err) {
+            console.error(err);
+            // フォールバック: 新しいタブで開く
+            window.open(item.url, '_blank');
+            setStatus('⚠️ 直接ダウンロードに失敗したため、新しいタブで開きました。右クリックから保存してください。', 'info');
+        }
+    }
+
+    // ===== 一括ダウンロード (ZIP) =====
+    async function downloadAll() {
+        if (currentMediaList.length === 0) return;
+
+        const btn = document.getElementById('downloadAllBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span>ZIP作成中...';
+
+        const progress = document.getElementById('progress');
+        progress.style.display = 'block';
+        progress.textContent = '進捗: 0 / ' + currentMediaList.length;
+
+        try {
+            const zip = new JSZip();
+
+            for (let i = 0; i < currentMediaList.length; i++) {
+                const item = currentMediaList[i];
+                try {
+                    const response = await fetchWithProxy(item.url);
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    const blob = await response.blob();
+                    const filename = `media_${String(i + 1).padStart(2, '0')}.${item.ext}`;
+                    zip.file(filename, blob);
+                } catch (err) {
+                    console.warn(`Failed to fetch ${item.url}:`, err.message);
+                    // 失敗したファイルはスキップ（またはエラーテキストを追加）
+                    zip.file(`ERROR_${i + 1}.txt`, `ダウンロード失敗: ${item.url}\n理由: ${err.message}`);
+                }
+                progress.textContent = `進捗: ${i + 1} / ${currentMediaList.length}`;
+            }
+
+            progress.textContent = 'ZIPを生成しています...';
+            const content = await zip.generateAsync({ type: 'blob' });
+
+            const url = URL.createObjectURL(content);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `twitter_media_${Date.now()}.zip`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            setStatus('✅ ZIPファイルのダウンロードが開始されました。', 'success');
+        } catch (err) {
+            console.error(err);
+            setStatus('❌ ZIPの作成に失敗しました: ' + err.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '📦 すべてZIPで一括ダウンロード';
+            progress.style.display = 'none';
+        }
+    }
+
+    // ===== メディア取得（CORSプロキシ付き） =====
+    async function fetchWithProxy(url) {
+        // まず直接
+        try {
+            return await fetch(url);
+        } catch (e) {
+            // プロキシ経由
+            const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+            return await fetch(proxyUrl);
+        }
+    }
+
+    // Enterキーで読み込み
+    document.getElementById('tweetUrl').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') loadMedia();
+    });
+</script>
+
+</body>
+</html>
