@@ -3,8 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>X メディアダウンローダー (403対策版)</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <title>X メディアダウンローダー</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #f5f5f5; color: #333; }
         h1 { font-size: 1.4rem; border-bottom: 2px solid #1da1f2; padding-bottom: 10px; margin-bottom: 20px; }
@@ -32,17 +31,20 @@
         .dl-btn:hover { background: #0d8bd9; }
         .header-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
         .count-badge { font-size: 13px; color: #555; }
-        #progress { display: none; margin-top: 10px; font-size: 13px; color: #555; }
+        .hint-box { background: #fff8e1; border-left: 4px solid #ffc107; padding: 10px 14px; border-radius: 4px; font-size: 13px; margin-bottom: 18px; line-height: 1.6; }
         .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin 0.6s linear infinite; margin-right: 6px; vertical-align: middle; }
         @keyframes spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
 
-    <h1>🐦 Twitter メディアダウンローダー (403対策版)</h1>
-    <p style="font-size: 13px; color: #666; margin-bottom: 18px;">
-        403エラーを回避するため、URLのサニタイズと複数のダウンロード経路を自動で試行します。
-    </p>
+    <h1>🐦 Twitter メディアダウンローダー</h1>
+
+    <div class="hint-box">
+        💡 <strong>使い方</strong>: 読み込み後、各メディアの「開く」ボタンを押すと新しいタブでメディアが表示されます。
+        表示された画像/動画を<strong>右クリック → 「名前を付けて保存」</strong>で保存してください。
+        一括ボタンを押すと全リンクをまとめたページが開きます。
+    </div>
 
     <div class="input-group">
         <input type="text" id="tweetUrl" placeholder="例: https://x.com/ユーザー名/status/1234567890" />
@@ -50,10 +52,9 @@
     </div>
 
     <div id="status"></div>
-    <div id="progress"></div>
 
     <div class="header-actions" id="actionArea" style="display:none;">
-        <button id="downloadAllBtn" onclick="downloadAll()">📦 すべてZIPで一括ダウンロード</button>
+        <button id="downloadAllBtn" onclick="openAllLinks()">📥 全リンクをまとめて開く</button>
         <span class="count-badge" id="countBadge"></span>
     </div>
 
@@ -61,34 +62,32 @@
 
 <script>
     let currentMediaList = [];
-    let currentTweetUrl = ''; // d.fxtwitter.com フォールバック用
 
+    // ===== ステータス表示 =====
     function setStatus(msg, type) {
         const el = document.getElementById('status');
         el.textContent = msg;
         el.className = 'status-' + type;
         el.style.display = 'block';
     }
-
     function hideStatus() {
         document.getElementById('status').style.display = 'none';
     }
 
-    function extractTweetInfo(input) {
+    // ===== URL抽出 =====
+    function extractTweetId(input) {
         const trimmed = input.trim();
-        if (/^\d+$/.test(trimmed)) return { id: trimmed, url: null };
-        const match = trimmed.match(/(?:twitter\.com|x\.com|vxtwitter\.com|fxtwitter\.com)\/([^\/]+)\/status\/(\d+)/i);
-        if (match) {
-            return { id: match[2], url: `https://x.com/${match[1]}/status/${match[2]}` };
-        }
-        return { id: null, url: null };
+        if (/^\d+$/.test(trimmed)) return trimmed;
+        const match = trimmed.match(/(?:twitter\.com|x\.com|vxtwitter\.com|fxtwitter\.com)\/(?:[^\/]+)\/status\/(\d+)/i);
+        return match ? match[1] : null;
     }
 
+    // ===== 読み込み =====
     async function loadMedia() {
         const input = document.getElementById('tweetUrl').value;
-        const info = extractTweetInfo(input);
+        const tweetId = extractTweetId(input);
 
-        if (!info.id) {
+        if (!tweetId) {
             setStatus('❌ 有効なツイートURLまたはIDを入力してください。', 'error');
             return;
         }
@@ -100,10 +99,9 @@
         document.getElementById('mediaGrid').innerHTML = '';
         document.getElementById('actionArea').style.display = 'none';
         currentMediaList = [];
-        currentTweetUrl = info.url;
 
         try {
-            const data = await fetchTweetData(info.id);
+            const data = await fetchTweetData(tweetId);
             const media = extractMedia(data);
 
             if (media.length === 0) {
@@ -125,6 +123,7 @@
         }
     }
 
+    // ===== Tweet情報取得（API本体のみ・プロキシは使わない） =====
     async function fetchTweetData(tweetId) {
         const apiUrls = [
             `https://api.fxtwitter.com/status/${tweetId}`,
@@ -138,37 +137,38 @@
                     const json = await res.json();
                     if (json.code === 200 || json.tweet) return json;
                 }
-            } catch (e) { console.warn(`Direct fetch failed: ${url}`, e.message); }
+            } catch (e) {
+                console.warn(`Fetch failed: ${url}`, e.message);
+            }
         }
-
-        // プロキシ経由
-        for (const url of apiUrls) {
-            try {
-                const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-                const res = await fetch(proxyUrl);
-                if (res.ok) {
-                    const json = await res.json();
-                    if (json.code === 200 || json.tweet) return json;
-                }
-            } catch (e) { console.warn(`Proxy fetch failed: ${url}`, e.message); }
+        // API本体すらブロックされる環境向けにプロキシを1つだけ試す
+        try {
+            const url = apiUrls[0];
+            const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+            const res = await fetch(proxyUrl);
+            if (res.ok) {
+                const json = await res.json();
+                if (json.code === 200 || json.tweet) return json;
+            }
+        } catch (e) {
+            console.warn('Proxy fetch failed:', e.message);
         }
         throw new Error('APIへのアクセスに失敗しました');
     }
 
-    // ===== メディア抽出とURLサニタイズ =====
+    // ===== メディア抽出 =====
     function extractMedia(data) {
         const list = [];
 
         function sanitizeUrl(url) {
             if (!url) return url;
-            // video.twimg.com の URL から ?tag= パラメータを削除 (403対策)
+            // 403対策: video.twimg.com の ?tag= を除去
             if (url.includes('video.twimg.com')) {
                 try {
                     const u = new URL(url);
                     u.searchParams.delete('tag');
                     return u.toString();
                 } catch (e) {
-                    // URL パースに失敗した場合は簡易的に置換
                     return url.replace(/[?&]tag=[^&]*/g, '');
                 }
             }
@@ -180,16 +180,22 @@
             if (m.photos) {
                 m.photos.forEach((p, i) => {
                     list.push({
-                        type: 'image', url: sanitizeUrl(p.url), thumbnail: sanitizeUrl(p.url),
-                        label: `画像 ${i + 1}`, ext: getExt(p.url)
+                        type: 'image',
+                        url: sanitizeUrl(p.url),
+                        thumbnail: sanitizeUrl(p.url),
+                        label: `画像 ${i + 1}`,
+                        ext: getExt(p.url)
                     });
                 });
             }
             if (m.videos) {
                 m.videos.forEach((v, i) => {
                     list.push({
-                        type: 'video', url: sanitizeUrl(v.url), thumbnail: v.thumbnail_url || '',
-                        label: `動画 ${i + 1}`, ext: 'mp4'
+                        type: 'video',
+                        url: sanitizeUrl(v.url),
+                        thumbnail: v.thumbnail_url || '',
+                        label: `動画 ${i + 1}`,
+                        ext: 'mp4'
                     });
                 });
             }
@@ -201,7 +207,8 @@
                 if (list.some(x => x.url === sanitized)) return;
                 list.push({
                     type: m.type === 'video' ? 'video' : 'image',
-                    url: sanitized, thumbnail: m.thumbnail_url || sanitized,
+                    url: sanitized,
+                    thumbnail: m.thumbnail_url || sanitized,
                     label: (m.type === 'video' ? '動画' : '画像') + ' ' + (i + 1),
                     ext: m.type === 'video' ? 'mp4' : getExt(sanitized)
                 });
@@ -214,7 +221,8 @@
                 const isVideo = /video\.twimg\.com|\.mp4/i.test(sanitized);
                 list.push({
                     type: isVideo ? 'video' : 'image',
-                    url: sanitized, thumbnail: sanitized,
+                    url: sanitized,
+                    thumbnail: sanitized,
                     label: (isVideo ? '動画' : '画像') + ' ' + (i + 1),
                     ext: isVideo ? 'mp4' : getExt(sanitized)
                 });
@@ -230,6 +238,7 @@
         return parts.length > 1 ? parts.pop().toLowerCase() : 'jpg';
     }
 
+    // ===== 描画 =====
     function renderMedia(list) {
         const grid = document.getElementById('mediaGrid');
         grid.innerHTML = '';
@@ -270,14 +279,14 @@
             urlLink.rel = 'noopener';
             urlLink.textContent = item.url;
 
-            const dlBtn = document.createElement('button');
-            dlBtn.className = 'dl-btn';
-            dlBtn.textContent = '⬇ ダウンロード';
-            dlBtn.onclick = () => downloadSingle(item, index);
+            const openBtn = document.createElement('button');
+            openBtn.className = 'dl-btn';
+            openBtn.textContent = '🔗 新しいタブで開く';
+            openBtn.onclick = () => openSingle(item);
 
             info.appendChild(typeLabel);
             info.appendChild(urlLink);
-            info.appendChild(dlBtn);
+            info.appendChild(openBtn);
 
             card.appendChild(preview);
             card.appendChild(info);
@@ -285,117 +294,85 @@
         });
     }
 
-    // ===== 強化されたダウンロード処理 =====
-    async function downloadSingle(item, index) {
-        const originalText = event.target.textContent;
-        event.target.disabled = true;
-        event.target.innerHTML = '<span class="spinner"></span>取得中...';
-
-        try {
-            const blob = await fetchMediaBlob(item.url, currentTweetUrl);
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `twitter_media_${index + 1}.${item.ext}`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            setStatus('✅ ダウンロードが開始されました。', 'success');
-        } catch (err) {
-            console.error(err);
-            // 最終手段: 新しいタブで開く（手動保存を促す）
-            window.open(item.url, '_blank');
-            setStatus('⚠️ 自動ダウンロードに失敗しました。新しいタブで開いたURLを右クリックして「名前を付けて保存」してください。', 'info');
-        } finally {
-            event.target.disabled = false;
-            event.target.textContent = originalText;
-        }
+    // ===== 個別オープン =====
+    function openSingle(item) {
+        const a = document.createElement('a');
+        a.href = item.url;
+        a.target = '_blank';
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setStatus('🔗 新しいタブで開きました。右クリック →「名前を付けて保存」で保存してください。', 'info');
     }
 
-    // メディアBlob取得のフォールバックチェーン
-    async function fetchMediaBlob(mediaUrl, tweetUrl) {
-        // 1. 直接 fetch (Referer を設定できるか試みる)
-        try {
-            const res = await fetch(mediaUrl, { referrer: 'https://x.com/', referrerPolicy: 'origin' });
-            if (res.ok) return await res.blob();
-        } catch (e) { console.warn('Direct fetch failed:', e.message); }
-
-        // 2. d.fxtwitter.com 経由 (ツイートURLがある場合)
-        if (tweetUrl) {
-            try {
-                const dfxUrl = tweetUrl.replace('https://x.com/', 'https://d.fxtwitter.com/');
-                const res = await fetch(dfxUrl);
-                if (res.ok) return await res.blob();
-            } catch (e) { console.warn('d.fxtwitter.com failed:', e.message); }
-        }
-
-        // 3. CORS プロキシローテーション
-        const proxies = [
-            `https://api.allorigins.win/raw?url=${encodeURIComponent(mediaUrl)}`,
-            `https://corsproxy.io/?${encodeURIComponent(mediaUrl)}`,
-            `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(mediaUrl)}`
-        ];
-        for (const proxyUrl of proxies) {
-            try {
-                const res = await fetch(proxyUrl);
-                if (res.ok) {
-                    const blob = await res.blob();
-                    if (blob.size > 0) return blob;
-                }
-            } catch (e) { console.warn(`Proxy failed: ${proxyUrl}`, e.message); }
-        }
-
-        throw new Error('すべてのダウンロード経路が失敗しました');
-    }
-
-    async function downloadAll() {
+    // ===== 一括: 補助ページを生成して開く =====
+    function openAllLinks() {
         if (currentMediaList.length === 0) return;
 
-        const btn = document.getElementById('downloadAllBtn');
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner"></span>ZIP作成中...';
+        const itemsHtml = currentMediaList.map((item, i) => {
+            const typeLabel = item.type === 'video' ? '🎬 動画' : '🖼️ 画像';
+            return `<li>
+                <div class="item-type">${typeLabel} <span class="item-num">#${i + 1}</span></div>
+                <a href="${escapeAttr(item.url)}" target="_blank" rel="noopener" class="item-link">${escapeHtml(item.url)}</a>
+            </li>`;
+        }).join('');
 
-        const progress = document.getElementById('progress');
-        progress.style.display = 'block';
-        progress.textContent = '進捗: 0 / ' + currentMediaList.length;
+        const html = `<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>Twitter Media - 一括ダウンロード補助</title>
+<style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 900px; margin: 20px auto; padding: 20px; background: #f5f5f5; color: #333; }
+    h1 { font-size: 1.3rem; border-bottom: 2px solid #1da1f2; padding-bottom: 10px; }
+    .hint { background: #fff8e1; border-left: 4px solid #ffc107; padding: 14px 18px; border-radius: 4px; line-height: 1.7; margin-bottom: 20px; }
+    .hint code { background: #fff; padding: 2px 6px; border-radius: 3px; border: 1px solid #ddd; }
+    ul { list-style: none; padding: 0; }
+    li { background: white; padding: 14px 18px; margin: 10px 0; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+    .item-type { font-weight: 700; margin-bottom: 6px; font-size: 14px; }
+    .item-num { color: #888; font-weight: 400; margin-left: 4px; }
+    .item-link { color: #1da1f2; word-break: break-all; font-size: 13px; line-height: 1.5; text-decoration: none; }
+    .item-link:hover { text-decoration: underline; }
+    .counter { color: #888; font-size: 13px; }
+</style>
+</head>
+<body>
+    <h1>📥 メディア一覧 (${currentMediaList.length} 件)</h1>
+    <div class="hint">
+        <strong>保存方法:</strong> 各リンクをクリックするとメディアが新しいタブで開きます。<br>
+        画像/動画が表示されたら <code>右クリック → 「名前を付けて保存」</code> で保存してください。<br>
+        動画の場合は再生を少し待つと保存メニューが有効になります。
+    </div>
+    <p class="counter">合計 ${currentMediaList.length} 件</p>
+    <ul>${itemsHtml}</ul>
+</body>
+</html>`;
 
-        try {
-            const zip = new JSZip();
+        const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
 
-            for (let i = 0; i < currentMediaList.length; i++) {
-                const item = currentMediaList[i];
-                try {
-                    const blob = await fetchMediaBlob(item.url, currentTweetUrl);
-                    zip.file(`media_${String(i + 1).padStart(2, '0')}.${item.ext}`, blob);
-                } catch (err) {
-                    console.warn(`Failed: ${item.url}`, err.message);
-                    zip.file(`ERROR_${i + 1}.txt`, `ダウンロード失敗: ${item.url}\n理由: ${err.message}`);
-                }
-                progress.textContent = `進捗: ${i + 1} / ${currentMediaList.length}`;
-            }
-
-            progress.textContent = 'ZIPを生成しています...';
-            const content = await zip.generateAsync({ type: 'blob' });
-            const url = URL.createObjectURL(content);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `twitter_media_${Date.now()}.zip`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            setStatus('✅ ZIPファイルのダウンロードが開始されました。', 'success');
-        } catch (err) {
-            console.error(err);
-            setStatus('❌ ZIPの作成に失敗しました: ' + err.message, 'error');
-        } finally {
-            btn.disabled = false;
-            btn.textContent = '📦 すべてZIPで一括ダウンロード';
-            progress.style.display = 'none';
+        // 新しいタブで開く
+        const win = window.open(url, '_blank', 'noopener');
+        if (!win) {
+            setStatus('⚠️ ポップアップがブロックされました。ブラウザのアドレスバー付近で「ポップアップを許可」してください。', 'error');
+        } else {
+            setStatus('✅ 全リンクをまとめたページを新しいタブで開きました。', 'success');
         }
+
+        // 少し待ってからBlob URLを解放（開いた側で読み込みが終わるまで）
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
     }
 
+    // ===== HTMLエスケープ =====
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[c]));
+    }
+    function escapeAttr(s) { return escapeHtml(s); }
+
+    // Enterキー対応
     document.getElementById('tweetUrl').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') loadMedia();
     });
